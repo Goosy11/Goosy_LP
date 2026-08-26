@@ -1,0 +1,93 @@
+name: SollKlar Android CI
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify transported source chunks
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "71feea44dcefc1caae13005036113744b7b374266a28f998a0185852a3880089  ci_input/chunk_00.b64" | sha256sum -c -
+          echo "a3a561cd05df898eca47035b22c6e2e50846051c1d040ced249b12c2c604f160  ci_input/chunk_01.b64" | sha256sum -c -
+          echo "9682dfebd1556ec44ed81888d8fba4bb1287ff3c625a8f88e7ce5bfaba497380  ci_input/chunk_02.b64" | sha256sum -c -
+          echo "26d8200a791d1bd0c4b935ebed08c6c5b9c7eede2982cb53b0997c86b0d7ab28  ci_input/chunk_03.b64" | sha256sum -c -
+          echo "2936d4c1e858eb2ac87b27e6e6f3587cd497326df68cf09c5b98eb9b15930b72  ci_input/chunk_04.b64" | sha256sum -c -
+
+      - name: Reconstruct exact source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat ci_input/chunk_*.b64 > SollKlar-source-input.b64
+          base64 --decode SollKlar-source-input.b64 > SollKlar-source-input.zip
+          echo "2b14aff1689bfd744555b80fbc9c7791fc43143ea28a9a75311abe4396034433  SollKlar-source-input.zip" | sha256sum -c -
+          unzip -q SollKlar-source-input.zip
+          test -f SollKlar/settings.gradle.kts
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-37" "build-tools;36.0.0"
+
+      - name: Set up Gradle 9.5.0
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+
+      - name: Generate Gradle wrapper
+        working-directory: SollKlar
+        run: gradle wrapper --gradle-version 9.5.0
+
+      - name: JVM unit tests
+        working-directory: SollKlar
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Android Lint
+        working-directory: SollKlar
+        run: ./gradlew :app:lintDebug --stacktrace
+
+      - name: Build debug APK and release AAB
+        working-directory: SollKlar
+        run: ./gradlew :app:assembleDebug :app:bundleRelease --stacktrace
+
+      - name: Package verified outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp SollKlar/app/build/outputs/apk/debug/app-debug.apk dist/SollKlar-1.0-debug.apk
+          cp SollKlar/app/build/outputs/bundle/release/app-release.aab dist/SollKlar-1.0-release-unsigned.aab
+          cp SollKlar-source-input.zip dist/SollKlar-1.0-source.zip
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+
+      - name: Upload verified release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: SollKlar-1.0-verified
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
